@@ -34,53 +34,151 @@ class TabDownloader:
         # For assets, put them in the tab's assets directory
         return os.path.join('downloaded_pages', tab_name, 'assets', path.lstrip('/'))
     
-    async def download_resource(self, url, tab_name):
-        """Download a single resource and save it locally."""
+    async def download_resource(self, url, tab_name, max_retries=2):
+        """Download a single resource and save it locally with retry logic."""
         if not url or url in self.visited_urls:
             return
             
         self.visited_urls.add(url)
         
-        try:
-            # Handle relative URLs
-            if url.startswith('//'):
-                url = f"{self.parsed_base.scheme}:{url}"
-            elif url.startswith('/'):
-                url = f"{self.base_domain}{url}"
-            elif not url.startswith(('http://', 'https://')):
-                url = urljoin(self.base_url, url)
+        # Handle relative URLs
+        if url.startswith('//'):
+            url = f"{self.parsed_base.scheme}:{url}"
+        elif url.startswith('/'):
+            url = f"{self.base_domain}{url}"
+        elif not url.startswith(('http://', 'https://')):
+            url = urljoin(self.base_url, url)
+        
+        # Skip external resources
+        if not url.startswith(self.base_domain):
+            return
             
-            # Skip external resources
-            if not url.startswith(self.base_domain):
-                return
-                
-            local_path = self.get_local_path(url, tab_name)
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    content = await response.read()
-                    
-                    # Handle text content (HTML, CSS, JS)
-                    content_type = response.headers.get('content-type', '')
-                    if any(t in content_type for t in ['text/html', 'text/css', 'application/javascript']):
-                        content = content.decode('utf-8')
-                        async with aiofiles.open(local_path, 'w', encoding='utf-8') as f:
-                            await f.write(content)
+        local_path = self.get_local_path(url, tab_name)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                async with self.session.get(url) as response:
+                    if response.status == 200:
+                        content = await response.read()
+                        
+                        # Handle text content (HTML, CSS, JS)
+                        content_type = response.headers.get('content-type', '').lower()
+                        if any(t in content_type for t in ['text/html', 'text/css', 'application/javascript']):
+                            try:
+                                content = content.decode('utf-8')
+                                async with aiofiles.open(local_path, 'w', encoding='utf-8') as f:
+                                    await f.write(content)
+                            except UnicodeDecodeError:
+                                # Fallback to binary if decoding fails
+                                async with aiofiles.open(local_path, 'wb') as f:
+                                    await f.write(content)
+                        else:
+                            # Binary content (images, fonts, etc.)
+                            async with aiofiles.open(local_path, 'wb') as f:
+                                await f.write(content)
+                        
+                        print(f"✓ Downloaded: {url}")
+                        return  # Success, exit the retry loop
                     else:
-                        # Binary content (images, fonts, etc.)
-                        async with aiofiles.open(local_path, 'wb') as f:
-                            await f.write(content)
-                    
-                    print(f"✓ Downloaded: {url}")
-                    return local_path
-                    
-        except Exception as e:
-            print(f"✗ Error downloading {url}: {str(e)}")
+                        last_error = f"HTTP {response.status}"
+                        print(f"✗ Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {last_error}")
+            except Exception as e:
+                last_error = str(e)
+                print(f"✗ Attempt {attempt + 1}/{max_retries + 1} failed for {url}: {last_error}")
+            
+            # Only sleep between retries, not after the last attempt
+            if attempt < max_retries:
+                await asyncio.sleep(1)  # Wait 1 second before retrying
+        
+        # If we get here, all attempts failed
+        print(f"✗ Failed to download {url} after {max_retries + 1} attempts. Last error: {last_error}")
         return None
+    
+    def remove_watermarks(self, soup):
+        """Remove Flipside watermarks and logos from the page."""
+        # Remove elements by class name or ID that might contain watermarks
+        watermarks = [
+            # Common watermark classes/IDs
+            {'selector': '.watermark', 'attribute': 'class'},
+            {'selector': 'flipside-logo', 'attribute': 'class'},
+            {'selector': 'footer', 'attribute': 'tag'},  # Often contains attribution
+            {'selector': '.footer', 'attribute': 'class'},
+            {'selector': 'header', 'attribute': 'tag'},  # Sometimes contains logo
+            {'selector': '.header', 'attribute': 'class'},
+            {'selector': 'img[alt*="flipside"]', 'attribute': 'css'},
+            {'selector': 'img[src*="logo"]', 'attribute': 'css'},
+            {'selector': '[class*="watermark"]', 'attribute': 'css'},
+            {'selector': '[class*="flipside"]', 'attribute': 'css'},
+        ]
+        
+        for wm in watermarks:
+            try:
+                if wm['attribute'] == 'class':
+                    for el in soup.find_all(class_=wm['selector']):
+                        el.decompose()
+                elif wm['attribute'] == 'tag':
+                    for el in soup.find_all(wm['selector']):
+                        el.decompose()
+                elif wm['attribute'] == 'css':
+                    # Use CSS selector
+                    for el in soup.select(wm['selector']):
+                        el.decompose()
+            except Exception as e:
+                print(f"Warning: Could not remove watermark {wm['selector']}: {str(e)}")
+        
+        # Remove inline styles that might contain watermarks
+        for tag in soup.find_all(style=True):
+            if 'watermark' in tag['style'].lower() or 'flipside' in tag['style'].lower():
+                tag.decompose()
+        
+        return soup
     
     async def process_html(self, html, base_url, tab_name):
         """Process HTML content and update resource URLs."""
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Add or update viewport meta tag
+        viewport = soup.find('meta', {'name': 'viewport'})
+        if not viewport:
+            viewport = soup.new_tag('meta', attrs={
+                'name': 'viewport',
+                'content': 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'
+            })
+            if soup.head:
+                soup.head.insert(0, viewport)
+        
+        # Add CSS to fix layout issues
+        style = soup.new_tag('style')
+        style.string = """
+            html, body {
+                width: 100% !important;
+                max-width: 100% !important;
+                overflow-x: hidden !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            body > * {
+                max-width: 100% !important;
+                box-sizing: border-box !important;
+            }
+            [style*="padding-right"],
+            [class*="padding"],
+            [class*="container"] {
+                max-width: 100% !important;
+                width: 100% !important;
+                padding-right: 0 !important;
+                margin-right: 0 !important;
+            }
+        """
+        if soup.head:
+            soup.head.append(style)
+        
+        # Remove watermarks before processing
+        soup = self.remove_watermarks(soup)
+        
         # Update all resource URLs in the HTML
         def update_url(match):
             url = match.group(1) or match.group(2)
@@ -132,10 +230,36 @@ class TabDownloader:
             page = await context.new_page()
             
             try:
+                # Set viewport to use full screen dimensions
+                screen_size = await page.evaluate('''() => {
+                    return {
+                        width: window.screen.availWidth,
+                        height: window.screen.availHeight
+                    };
+                }''')
+                await page.set_viewport_size(screen_size)
+                
+                # Maximize the browser window
+                await page.set_viewport_size({
+                    "width": screen_size['width'],
+                    "height": screen_size['height']
+                })
+                
                 # Navigate to the main page
                 print(f"Loading {self.base_url}...")
                 await page.goto(self.base_url, wait_until='domcontentloaded')
                 await page.wait_for_load_state('networkidle')
+                
+                # Ensure viewport is set after navigation
+                await page.evaluate('''() => {
+                    const viewportMeta = document.querySelector('meta[name="viewport"]');
+                    if (!viewportMeta) {
+                        const meta = document.createElement('meta');
+                        meta.name = 'viewport';
+                        meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+                        document.head.appendChild(meta);
+                    }
+                }''')
                 
                 # Click the tab
                 print(f"Clicking tab: {tab_name}")
@@ -146,6 +270,14 @@ class TabDownloader:
                 # Wait for content to load
                 print("Waiting for content to load...")
                 await asyncio.sleep(15)
+                
+                # Ensure all styles are loaded
+                await page.evaluate('''() => {
+                    // Force layout and style recalculation
+                    document.body.offsetHeight;
+                    // Ensure fonts are loaded
+                    document.fonts.ready.then(() => {});
+                }''')
                 
                 # Get all resource URLs from the page
                 resources = await page.evaluate('''() => {
@@ -176,10 +308,22 @@ class TabDownloader:
                 # Process the HTML to update resource URLs
                 processed_content = await self.process_html(content, self.base_url, tab_name.lower())
                 
+                # Ensure viewport meta tag exists in the saved HTML
+                if '<meta name="viewport"' not in processed_content:
+                    processed_content = processed_content.replace(
+                        '<head>',
+                        '<head>\n    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">',
+                        1  # Only replace the first occurrence
+                    )
+                
                 # Save the HTML
                 filepath = os.path.join(tab_dir, 'index.html')
-                async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
-                    await f.write(processed_content)
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(processed_content)
+                    
+                # Take a full page screenshot
+                screenshot_path = os.path.join(tab_dir, 'screenshot.png')
+                await page.screenshot(path=screenshot_path, full_page=True)
                 
                 print(f"✓ Successfully saved {tab_name} to {filepath}")
                 return True
