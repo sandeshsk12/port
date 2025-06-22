@@ -6,6 +6,7 @@ from urllib.parse import urlparse, urljoin
 from pathlib import Path
 from playwright.async_api import async_playwright
 import re
+from bs4 import BeautifulSoup
 
 class TabDownloader:
     def __init__(self, base_url):
@@ -212,6 +213,29 @@ class TabDownloader:
         
         return html
     
+    async def take_full_page_screenshot(self, page, output_path):
+        """Take a full page screenshot with scrolling."""
+        # Get the total height of the page
+        total_height = await page.evaluate('''() => {
+            const body = document.body;
+            const html = document.documentElement;
+            return Math.max(
+                body.scrollHeight,
+                body.offsetHeight,
+                html.clientHeight,
+                html.scrollHeight,
+                html.offsetHeight
+            );
+        }''')
+        
+        # Set viewport to full page height
+        viewport_width = await page.evaluate('window.innerWidth')
+        await page.set_viewport_size({"width": viewport_width, "height": total_height})
+        
+        # Take the screenshot
+        await page.screenshot(path=output_path, full_page=True)
+        print(f"✓ Screenshot saved to {output_path}")
+    
     async def download_tab(self, tab_info):
         """Download content of a specific tab with all its resources."""
         tab_name = tab_info['name']
@@ -228,6 +252,9 @@ class TabDownloader:
             browser = await p.chromium.launch(headless=False)
             context = await browser.new_context()
             page = await context.new_page()
+            
+            # Set a larger viewport to ensure content is visible
+            await page.set_viewport_size({"width": 1920, "height": 1080})
             
             try:
                 # Set viewport to use full screen dimensions
@@ -302,28 +329,40 @@ class TabDownloader:
                 download_tasks = [self.download_resource(url, tab_name.lower()) for url in resources]
                 await asyncio.gather(*download_tasks, return_exceptions=True)
                 
+                # Take a full page screenshot with scrolling first
+                screenshot_path = os.path.join(tab_dir, 'screenshot.png')
+                await self.take_full_page_screenshot(page, screenshot_path)
+                
                 # Get the final HTML
                 content = await page.content()
                 
-                # Process the HTML to update resource URLs
-                processed_content = await self.process_html(content, self.base_url, tab_name.lower())
+                # Save the raw HTML first
+                raw_html_path = os.path.join(tab_dir, 'raw.html')
+                with open(raw_html_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
                 
-                # Ensure viewport meta tag exists in the saved HTML
-                if '<meta name="viewport"' not in processed_content:
-                    processed_content = processed_content.replace(
-                        '<head>',
-                        '<head>\n    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">',
-                        1  # Only replace the first occurrence
-                    )
-                
-                # Save the HTML
-                filepath = os.path.join(tab_dir, 'index.html')
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(processed_content)
+                try:
+                    # Process the HTML to update resource URLs
+                    processed_content = await self.process_html(content, self.base_url, tab_name.lower())
                     
-                # Take a full page screenshot
-                screenshot_path = os.path.join(tab_dir, 'screenshot.png')
-                await page.screenshot(path=screenshot_path, full_page=True)
+                    # Ensure viewport meta tag exists in the saved HTML
+                    if '<meta name="viewport"' not in processed_content:
+                        processed_content = processed_content.replace(
+                            '<head>',
+                            '<head>\n    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">',
+                            1  # Only replace the first occurrence
+                        )
+                    
+                    # Save the processed HTML
+                    filepath = os.path.join(tab_dir, 'index.html')
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(processed_content)
+                except Exception as e:
+                    print(f"Warning: HTML processing failed, using raw HTML. Error: {str(e)}")
+                    # If processing fails, use the raw HTML
+                    filepath = os.path.join(tab_dir, 'index.html')
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(content)
                 
                 print(f"✓ Successfully saved {tab_name} to {filepath}")
                 return True
