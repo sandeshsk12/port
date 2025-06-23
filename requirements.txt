@@ -1,5 +1,4 @@
 streamlit==1.32.0
-playwright==1.42.0
 beautifulsoup4==4.12.3
 aiohttp==3.9.3
 aiofiles==23.2.1

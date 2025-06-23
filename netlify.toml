@@ -1,17 +1,9 @@
 [build]
-  command = "pip install -r requirements.txt && python -m playwright install --with-deps"
+  command = ""
   publish = "public"
-  functions = "netlify/functions"
 
 [build.environment]
-  PYTHON_VERSION = "3.9"
   NODE_VERSION = "18"
-  PLAYWRIGHT_BROWSERS_PATH = "0"
-  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "0"
-
-[functions]
-  node_bundler = "esbuild"
-  external_node_modules = ["playwright"]
 
 [[redirects]]
   from = "/*"

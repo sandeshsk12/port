@@ -11,4 +11,7 @@ python -m playwright install --with-deps
 # Create public directory if it doesn't exist
 mkdir -p public
 
+# The index.html is already in the public directory
+# No need to generate it here
+
 echo "Build completed successfully!"
