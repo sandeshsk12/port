@@ -247,7 +247,7 @@ if st.button("🚀 Start Download"):
             original_print(*args, **kwargs)
             logs.append(" ".join(str(a) for a in args))
 
-        builtins.print = _capture_print  # monkey-patch
+        builtins.print = _capture_print  # monkey-patchss
         try:
             with st.spinner("Downloading… this may take a few minutes…"):
                 asyncio.run(main_scraper(url, out_dir))
