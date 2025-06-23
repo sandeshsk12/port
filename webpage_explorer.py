@@ -369,8 +369,7 @@ class WebpageExplorer:
         # 3. Look for common navigation patterns in the page
         common_nav_terms = [
             'about', 'tokens', 'nft', 'governance', 'airdrop', 
-            'socials', 'author', 'docs', 'features', 'pricing',
-            'contact', 'blog', 'home', 'portfolio', 'projects', 'IRL'
+            'socials', 'author', 'docs', 'features'
         ]
         
         # Check page text for common navigation terms
@@ -396,7 +395,7 @@ class WebpageExplorer:
         # Build mapping of tab slug → relative path
         TAB_MAPPING = {}
         for slug in all_slugs:
-            # Always use relative paths from the current location . 
+            # Always use relative paths from the current location
             if current_tab_slug:  # we are inside downloaded_pages/<current>/index.html
                 TAB_MAPPING[slug] = f"../{slug}/index.html"
             else:  # landing page scenario

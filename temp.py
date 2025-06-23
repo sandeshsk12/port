@@ -1,181 +1,174 @@
-#!/usr/bin/env python3
-"""rewrite_nav_buttons.py
-
-Walks through the *landing page* and every HTML file in the **downloaded_pages/**
-mirror, finds navigation `<button>` elements, and turns them into working
-offline links by wrapping them in an `<a href="…">` that points at the
-corresponding local file.
-
-It is *idempotent*: running it multiple times won’t duplicate wrappers.
-
-Usage
------
-```bash
-python rewrite_nav_buttons.py            # uses defaults: landing_page.html + downloaded_pages/
-python rewrite_nav_buttons.py --root out --landing homepage.html
-```
-
-Requires **beautifulsoup4** (`pip install beautifulsoup4`).
-"""
-
-from __future__ import annotations
-
-import argparse
+import asyncio
+import json
 import os
 import re
+from urllib.parse import urljoin
 from pathlib import Path
 
+import aiohttp
 from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
+import shutil
 
-ENCODING = "utf-8"
+def slugify(text):
+    return re.sub(r'[^a-z0-9]+', '-', text.strip().lower()).strip('-') or 'untitled'
 
-# ──────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────
-
-def slugify(text: str) -> str:
-    """Return a filesystem‑safe slug for *text*."""
-    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-") or "untitled"
-
-
-def button_selector(tag) -> bool:  # type: ignore[valid-type]
-    """Heuristic: does *tag* look like a nav button we care about?"""
-    if tag.name != "button":
-        return False
-    if tag.has_attr("id") and "trigger-tab-layout" in tag["id"]:
-        return True
-    return tag.get("role") == "tab"
-
-
-def find_target_html(button, root: Path) -> Path | None:
-    """Given a `<button>`, return the path to its mirrored HTML file if present."""
-    label = button.get_text(strip=True)
-    for candidate in (label, button.get("id")):
-        if not candidate:
-            continue
-        slug = slugify(candidate)
-        html_path = root / slug / "index.html"
-        if html_path.exists():
-            return html_path
-    return None
-
-
-def rewrite_file(html_path: Path, root: Path) -> bool:
-    """Rewrite *html_path* in‑place; return True if it changed."""
+async def download_resource(session, url, output_path):
     try:
-        # Read the file with explicit encoding
-        content = html_path.read_text(encoding=ENCODING)
-        soup = BeautifulSoup(content, "html.parser")
-        changed = False
-
-        for btn in soup.find_all(button_selector):
-            try:
-                dest = find_target_html(btn, root)
-                if not dest:
-                    continue
-                    
-                # Get relative path from html_path's parent to the destination
-                try:
-                    rel_link = os.path.relpath(
-                        str(dest.absolute()),
-                        str(html_path.parent.absolute())
-                    ).replace("\\", "/")
-                except ValueError:
-                    # Fallback to relative path if absolute path resolution fails
-                    rel_link = str(dest.relative_to(html_path.parent)).replace("\\", "/")
-
-
-                # Skip if already correctly linked
-                if btn.parent.name == "a" and btn.parent.get("href") == rel_link:
-                    continue
-
-                # Create and configure the anchor tag
-                anchor = soup.new_tag("a", href=rel_link)
-                anchor['style'] = "text-decoration: none;"
-                
-                # Copy important attributes from button to anchor
-                for attr in ['class', 'style', 'title']:
-                    if btn.get(attr):
-                        if attr == 'style':
-                            anchor['style'] = f"{anchor.get('style', '')}; {btn['style']}"
-                        else:
-                            anchor[attr] = btn[attr]
-                
-                # Wrap the button with the anchor
-                btn.wrap(anchor)
-                changed = True
-                
-            except Exception as e:
-                print(f"  ⚠️  Error processing button in {html_path.name}: {e}")
-                continue
-
-        if changed:
-            # Create a backup before modifying
-            backup_path = html_path.with_suffix(f"{html_path.suffix}.bak")
-            if not backup_path.exists():
-                html_path.rename(backup_path)
-            
-            # Write the modified content
-            html_path.write_text(soup.prettify(), encoding=ENCODING)
-            return True
-            
-    except Exception as e:
-        print(f"❌ Error processing {html_path.name}: {e}")
-        raise
-        
+        async with session.get(url) as response:
+            if response.status == 200:
+                content = await response.read()
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(output_path, 'wb') as f:
+                    f.write(content)
+                return True
+    except Exception:
+        pass
     return False
 
+def rewrite_links(soup, current_html_path, site_map, base_output_dir):
+    nav_elements = soup.select('a, button, [role="button"]')
+    current_dir = Path(current_html_path).parent
 
-# ──────────────────────────────────────────────────────────────
-# CLI
-# ──────────────────────────────────────────────────────────────
+    for el in nav_elements:
+        text = el.get_text(strip=True)
+        if not text:
+            continue
+        
+        slug = slugify(text)
+        if slug in site_map:
+            target_path = Path(base_output_dir) / site_map[slug]
+            relative_path = os.path.relpath(target_path.resolve(), current_dir.resolve())
 
-def get_relative_path(path: Path) -> str:
-    """Get a relative path from cwd, or absolute if not possible."""
-    try:
-        return str(path.relative_to(Path.cwd()))
-    except ValueError:
-        return str(path.absolute())
+            if el.name == 'a':
+                el['href'] = relative_path
+            else:
+                anchor = soup.new_tag('a', href=relative_path)
+                if el.get('class'):
+                    anchor['class'] = el.get('class')
+                anchor['style'] = el.get('style', '') + ' text-decoration: none; color: inherit; cursor: pointer;'
+                anchor.string = el.get_text()
+                el.replace_with(anchor)
+    return soup
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Make mirrored nav buttons clickable")
-    parser.add_argument("--root", default="downloaded_pages", help="Root directory of downloaded pages")
-    parser.add_argument("--landing", default="landing_page.html", help="Landing page HTML file")
-    args = parser.parse_args()
+async def save_page_with_assets(page, session, output_dir, file_slug, site_map, base_output_dir):
+    output_dir_path = Path(output_dir)
+    if output_dir_path.name == file_slug:
+        print(f"    -> Correcting main page slug to 'index' for {file_slug}")
+        file_slug = "index"
 
-    # Convert to absolute paths
-    root_dir = Path(args.root).resolve()
-    landing = Path(args.landing).resolve()
-    
-    # Ensure the root directory exists
-    if not root_dir.exists():
-        print(f"❌ Error: Directory not found: {root_dir}")
-        return
+    print(f"    -> Processing page: {output_dir_path.name}/{file_slug}")
+    print("      Waiting 5 seconds for page to load...")
+    await page.wait_for_timeout(5000)
+    html = await page.content()
+    base_url = page.url
+    soup = BeautifulSoup(html, 'html.parser')
 
-    # Collect all HTML files
-    html_files = []
-    if landing.exists():
-        html_files.append(landing)
-    
-    # Add all HTML files from the root directory
-    html_files.extend([f.resolve() for f in root_dir.rglob("*.html")])
+    assets_dir_name = f"{file_slug}_files"
+    assets_out_dir = Path(output_dir) / assets_dir_name
+    assets_out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not html_files:
-        print("ℹ️  No HTML files found to process.")
-        return
+    for link_tag in soup.find_all('link', rel='stylesheet'):
+        css_url = link_tag.get('href')
+        if not css_url: continue
+        abs_css_url = urljoin(base_url, css_url)
+        css_filename = os.path.basename(abs_css_url.split('?')[0]) or "style.css"
+        local_css_path = assets_out_dir / css_filename
+        if await download_resource(session, abs_css_url, str(local_css_path)):
+            link_tag['href'] = f"{assets_dir_name}/{css_filename}"
 
-    # Process each file
-    modified_count = 0
-    for html in html_files:
-        try:
-            if rewrite_file(html, root_dir):
-                print(f"🔗  Fixed navigation in {get_relative_path(html)}")
-                modified_count += 1
-        except Exception as e:
-            print(f"⚠️  Error processing {get_relative_path(html)}: {e}")
+    fpath = Path(output_dir) / f"{file_slug}.html"
+    soup = rewrite_links(soup, str(fpath), site_map, base_output_dir)
 
-    print(f"\n✅  {modified_count} file(s) modified. All buttons are now offline‑clickable.")
+    with open(fpath, 'w', encoding='utf-8') as f:
+        f.write(str(soup))
+    print(f"      Saved and linked HTML to {fpath}")
 
+async def discover_site_structure(page):
+    print("--- Starting Site Discovery Phase ---")
+    site_map = {}
+    main_tabs_handles = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+
+    for i in range(len(main_tabs_handles)):
+        main_tabs = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+        main_tab_element = main_tabs[i]
+        main_name = await main_tab_element.inner_text()
+        main_slug = slugify(main_name)
+        
+        await main_tab_element.click()
+        await page.wait_for_timeout(2000)
+
+        all_tablists = await page.query_selector_all('[role="tablist"]')
+        
+        if len(all_tablists) <= 1:
+            site_map[main_slug] = str(Path(main_slug) / "index.html")
+        else:
+            sub_tabs_handles = await all_tablists[1].query_selector_all('[role="tab"]')
+            if sub_tabs_handles:
+                first_sub_name = await sub_tabs_handles[0].inner_text()
+                site_map[main_slug] = str(Path(main_slug) / f"{slugify(first_sub_name)}.html")
+
+                for sub_tab_handle in sub_tabs_handles:
+                    sub_name = await sub_tab_handle.inner_text()
+                    site_map[slugify(sub_name)] = str(Path(main_slug) / f"{slugify(sub_name)}.html")
+
+    print("--- Site Discovery Complete ---")
+    print(json.dumps(site_map, indent=2))
+    await page.goto(page.url, wait_until="networkidle")
+    return site_map
+
+async def main(url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url, wait_until="networkidle")
+
+        site_map = await discover_site_structure(page)
+
+        print("\n--- Starting Download and Rewrite Phase ---")
+        out_dir_base = 'tab_snapshots'
+        if Path(out_dir_base).exists():
+            print(f"--- Removing existing output directory: {out_dir_base} ---")
+            shutil.rmtree(out_dir_base)
+        Path(out_dir_base).mkdir(exist_ok=True)
+
+        async with aiohttp.ClientSession() as session:
+            main_tabs_handles = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+            for i in range(len(main_tabs_handles)):
+                main_tabs = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+                name = await main_tabs[i].inner_text()
+                print(f"\nProcessing main tab: {name}")
+
+                try:
+                    await main_tabs[i].click()
+                    await page.wait_for_timeout(2000)
+
+                    slug = slugify(name)
+                    tab_out_dir = Path(out_dir_base) / slug
+                    tab_out_dir.mkdir(parents=True, exist_ok=True)
+
+                    all_tablists = await page.query_selector_all('[role="tablist"]')
+                    if len(all_tablists) <= 1:
+                        await save_page_with_assets(page, session, str(tab_out_dir), "index", site_map, out_dir_base)
+                    else:
+                        print(f"  Found sub-tabs for '{name}'")
+                        sub_tab_buttons = await all_tablists[1].query_selector_all('[role="tab"]')
+                        for j in range(len(sub_tab_buttons)):
+                            sub_tabs = await (await page.query_selector_all('[role="tablist"]'))[1].query_selector_all('[role="tab"]')
+                            sub_name = await sub_tabs[j].inner_text()
+                            try:
+                                await sub_tabs[j].click()
+                                await page.wait_for_timeout(1500)
+                                await save_page_with_assets(page, session, str(tab_out_dir), slugify(sub_name), site_map, out_dir_base)
+                            except Exception as sub_e:
+                                print(f"    -> Error on sub-tab '{sub_name}': {sub_e}")
+
+                except Exception as e:
+                    print(f"  -> Error on main tab '{name}': {e}")
+
+        await browser.close()
+        print("\n✅ All tabs and assets downloaded and linked.")
 
 if __name__ == "__main__":
-    main()
+    dashboard_url = 'https://flipsidecrypto.xyz/Sandesh/nekodex-Uk50Sh'
+    asyncio.run(main(dashboard_url))
