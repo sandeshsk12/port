@@ -308,15 +308,81 @@ class WebpageExplorer:
             except re.error as e:
                 print(f"  Warning: CSS URL processing error - {e}")
 
-        # Remove any existing <base> tag so that relative links resolve locally
-        for b in soup.find_all("base"):
-            b.decompose()
-
-        # Convert buttons to local links
+        # Remove any base tag to prevent it from affecting relative URLs
+        for base in soup.find_all('base'):
+            base.decompose()
+            
+        # Convert buttons to links after processing all resources
         self._convert_nav_buttons(soup, tab_slug)
-
+        
         return str(soup)
         
+    def _extract_nav_slugs(self, soup) -> list[str]:
+        """Extract navigation slugs from the page content.
+        
+        Args:
+            soup: BeautifulSoup object of the current HTML page
+            
+        Returns:
+            List of slug strings
+        """
+        from pathlib import Path
+        import re
+        
+        slugs = set()
+        
+        # 1. Find all navigation buttons/links in the page
+        # Common patterns for navigation elements
+        nav_selectors = [
+            'nav a[href]',  # Links in nav elements
+            '.nav a[href]', # Links in elements with nav class
+            'header a[href]', # Links in header
+            'button',        # All buttons
+            '[role="tab"]', # ARIA tabs
+            '[role="navigation"] a[href]' # Navigation role links
+        ]
+        
+        # 2. Extract unique hrefs from navigation elements
+        seen_hrefs = set()
+        for selector in nav_selectors:
+            for element in soup.select(selector):
+                href = element.get('href', '')
+                if not href or href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+                    continue
+                    
+                # Clean and normalize the URL
+                href = href.split('?')[0].split('#')[0].rstrip('/')
+                if not href or href in seen_hrefs:
+                    continue
+                seen_hrefs.add(href)
+                
+                # Extract the last path component as slug
+                slug = Path(href).name.lower()
+                if slug and slug not in ('', 'index.html', 'index.htm'):
+                    slugs.add(slug)
+                
+                # Also check button text as fallback
+                text = element.get_text(strip=True).lower()
+                if text and len(text) < 30:  # Reasonable length for a tab name
+                    slugs.add(text)
+        
+        # 3. Look for common navigation patterns in the page
+        common_nav_terms = [
+            'about', 'tokens', 'nft', 'governance', 'airdrop', 
+            'socials', 'author', 'docs', 'features', 'pricing',
+            'contact', 'blog', 'home', 'portfolio', 'projects', 'IRL'
+        ]
+        
+        # Check page text for common navigation terms
+        page_text = soup.get_text().lower()
+        for term in common_nav_terms:
+            if term in page_text:
+                slugs.add(term)
+        
+        # Remove any empty strings and sort
+        slugs.discard('')
+        return sorted(list(slugs))
+
     def _convert_nav_buttons(self, soup, current_tab_slug: str):
         """Convert navigation buttons to clickable links.
         
@@ -324,28 +390,13 @@ class WebpageExplorer:
             soup: BeautifulSoup object of the current HTML page
             current_tab_slug: Slug of the current tab being processed
         """
-        # Build mapping of tab slug → relative path of its offline mirror.
-        # All tab pages are saved as downloaded_pages/<slug>/index.html. When we are
-        # inside one of those pages (i.e. current_tab_slug equals that slug) the
-        # resulting HTML file lives at depth 2 (downloaded_pages/<slug>/index.html).
-        # Therefore the correct relative link to a sibling tab is "../<other>/index.html".
-        #
-        # When we later post-process the landing page (root level) we will call this
-        # helper with current_tab_slug="" so that the links become
-        # "downloaded_pages/<slug>/index.html".
-        all_slugs = [
-            "about",
-            "tokens",
-            "nft",
-            "governance",
-            "airdrop",
-            "socials",
-            "author",
-            "houekeeping",
-        ]
-
+        # Extract navigation slugs from the page content
+        all_slugs = self._extract_nav_slugs(soup)
+        
+        # Build mapping of tab slug → relative path
         TAB_MAPPING = {}
         for slug in all_slugs:
+            # Always use relative paths from the current location . 
             if current_tab_slug:  # we are inside downloaded_pages/<current>/index.html
                 TAB_MAPPING[slug] = f"../{slug}/index.html"
             else:  # landing page scenario
