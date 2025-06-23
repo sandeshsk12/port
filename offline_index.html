@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline Mirror Index</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        .page-link {
+            display: block;
+            padding: 12px 15px;
+            margin: 10px 0;
+            background: #f8f9fa;
+            border-radius: 6px;
+            text-decoration: none;
+            color: #2c3e50;
+            border-left: 4px solid #3498db;
+            transition: all 0.2s ease;
+        }
+        .page-link:hover {
+            background: #e9ecef;
+            transform: translateX(5px);
+        }
+        .last-updated {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+    <h1>Offline Mirror</h1>
+    <p>This is an offline mirror of the website. Click on any link below to view the pages:</p>
+    
+    <div id="pages">
+        <a href="downloaded_pages/landing/index.html" class="page-link">🏠 Landing Page</a>
+        <a href="downloaded_pages/about/index.html" class="page-link">ℹ️ About</a>
+        <a href="downloaded_pages/tokens/index.html" class="page-link">💰 Tokens</a>
+        <a href="downloaded_pages/nft/index.html" class="page-link">🖼️ NFT</a>
+        <a href="downloaded_pages/governance/index.html" class="page-link">🏛️ Governance</a>
+        <a href="downloaded_pages/airdrop/index.html" class="page-link">🎁 Airdrop</a>
+        <a href="downloaded_pages/socials/index.html" class="page-link">📱 Socials</a>
+        <a href="downloaded_pages/author/index.html" class="page-link">✍️ Author</a>
+        <a href="downloaded_pages/houekeeping/index.html" class="page-link">🏠 Housekeeping</a>
+    </div>
+    
+    <p class="last-updated">Last updated: <span id="last-updated"></span></p>
+
+    <script>
+        // Update the last updated time
+        document.getElementById('last-updated').textContent = new Date().toLocaleString();
+    </script>
+</body>
+</html>
