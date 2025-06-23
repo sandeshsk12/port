@@ -52,12 +52,7 @@ def rewrite_links(soup, current_html_path, site_map, base_output_dir):
     return soup
 
 async def save_page_with_assets(page, session, output_dir, file_slug, site_map, base_output_dir):
-    output_dir_path = Path(output_dir)
-    if output_dir_path.name == file_slug:
-        print(f"    -> Correcting main page slug to 'index' for {file_slug}")
-        file_slug = "index"
-
-    print(f"    -> Processing page: {output_dir_path.name}/{file_slug}")
+    print(f"    -> Processing page: {Path(output_dir).relative_to(base_output_dir)}/{file_slug}")
     print("      Waiting 5 seconds for page to load...")
     await page.wait_for_timeout(5000)
     html = await page.content()
@@ -123,52 +118,57 @@ async def main(url):
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle")
 
-        site_map = await discover_site_structure(page)
-
-        print("\n--- Starting Download and Rewrite Phase ---")
         out_dir_base = 'tab_snapshots'
         if Path(out_dir_base).exists():
             print(f"--- Removing existing output directory: {out_dir_base} ---")
             shutil.rmtree(out_dir_base)
         Path(out_dir_base).mkdir(exist_ok=True)
 
+        main_tabs_handles = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+
         async with aiohttp.ClientSession() as session:
-            main_tabs_handles = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
-            for i in range(len(main_tabs_handles)):
-                main_tabs = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
-                name = await main_tabs[i].inner_text()
-                print(f"\nProcessing main tab: {name}")
+            if not main_tabs_handles:
+                print("--- No tabs found. Saving as a single page. ---")
+                await save_page_with_assets(page, session, out_dir_base, "index", {}, out_dir_base)
+            else:
+                site_map = await discover_site_structure(page)
+                print("\n--- Starting Download and Rewrite Phase ---")
 
-                try:
-                    await main_tabs[i].click()
-                    await page.wait_for_timeout(2000)
+                for i in range(len(main_tabs_handles)):
+                    main_tabs = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+                    name = await main_tabs[i].inner_text()
+                    print(f"\nProcessing main tab: {name}")
 
-                    slug = slugify(name)
-                    tab_out_dir = Path(out_dir_base) / slug
-                    tab_out_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        await main_tabs[i].click()
+                        await page.wait_for_timeout(2000)
 
-                    all_tablists = await page.query_selector_all('[role="tablist"]')
-                    if len(all_tablists) <= 1:
-                        await save_page_with_assets(page, session, str(tab_out_dir), "index", site_map, out_dir_base)
-                    else:
-                        print(f"  Found sub-tabs for '{name}'")
-                        sub_tab_buttons = await all_tablists[1].query_selector_all('[role="tab"]')
-                        for j in range(len(sub_tab_buttons)):
-                            sub_tabs = await (await page.query_selector_all('[role="tablist"]'))[1].query_selector_all('[role="tab"]')
-                            sub_name = await sub_tabs[j].inner_text()
-                            try:
-                                await sub_tabs[j].click()
-                                await page.wait_for_timeout(1500)
-                                await save_page_with_assets(page, session, str(tab_out_dir), slugify(sub_name), site_map, out_dir_base)
-                            except Exception as sub_e:
-                                print(f"    -> Error on sub-tab '{sub_name}': {sub_e}")
+                        slug = slugify(name)
+                        tab_out_dir = Path(out_dir_base) / slug
+                        tab_out_dir.mkdir(parents=True, exist_ok=True)
 
-                except Exception as e:
-                    print(f"  -> Error on main tab '{name}': {e}")
+                        all_tablists = await page.query_selector_all('[role="tablist"]')
+                        if len(all_tablists) <= 1:
+                            await save_page_with_assets(page, session, str(tab_out_dir), "index", site_map, out_dir_base)
+                        else:
+                            print(f"  Found sub-tabs for '{name}'")
+                            sub_tab_buttons = await all_tablists[1].query_selector_all('[role="tab"]')
+                            for j in range(len(sub_tab_buttons)):
+                                sub_tabs = await (await page.query_selector_all('[role="tablist"]'))[1].query_selector_all('[role="tab"]')
+                                sub_name = await sub_tabs[j].inner_text()
+                                try:
+                                    await sub_tabs[j].click()
+                                    await page.wait_for_timeout(1500)
+                                    await save_page_with_assets(page, session, str(tab_out_dir), slugify(sub_name), site_map, out_dir_base)
+                                except Exception as sub_e:
+                                    print(f"    -> Error on sub-tab '{sub_name}': {sub_e}")
+
+                    except Exception as e:
+                        print(f"  -> Error on main tab '{name}': {e}")
 
         await browser.close()
         print("\n✅ All tabs and assets downloaded and linked.")
 
 if __name__ == "__main__":
-    dashboard_url = 'https://flipsidecrypto.xyz/Sandesh/nekodex-Uk50Sh'
+    dashboard_url = 'https://flipsidecrypto.xyz/Sandesh/ronin-february-recap-rCabVp'
     asyncio.run(main(dashboard_url))
