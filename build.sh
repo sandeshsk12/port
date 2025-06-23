@@ -1,18 +1,14 @@
 #!/bin/bash
 set -e
 
-# Install Python
-python --version
-
-# Install dependencies
+echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install Playwright and its dependencies
+echo "Installing Playwright browsers..."
 python -m playwright install --with-deps
 
-# Create public directory
+# Create public directory if it doesn't exist
 mkdir -p public
 
-# Create a simple redirect page
-echo "<html><head><meta http-equiv=\"refresh\" content=\"0;url=https://share.streamlit.io/sandeshsk12/port/streamlit_app.py\"></head><body>Redirecting to Streamlit Cloud...</body></html>" > public/index.html
+echo "Build completed successfully!"
