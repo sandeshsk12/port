@@ -5,4 +5,4 @@ aiohttp
 aiofiles
 requests
 python-dotenv
-python==3.11
+python==3.11.0
