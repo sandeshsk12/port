@@ -1,14 +1,46 @@
+import os
+import subprocess
+import sys
+import streamlit as st
 import asyncio
 import json
-import os
 import re
-from urllib.parse import urljoin
+import shutil
+import builtins
 from pathlib import Path
+from urllib.parse import urljoin
 
 import aiohttp
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
-import shutil
+
+# ————— Corrected & Robust Playwright Installation —————
+@st.cache_resource
+def install_playwright_deps():
+    """
+    Installs the chromium browser for Playwright.
+    The @st.cache_resource decorator ensures this runs only once.
+    """
+    try:
+        # Using sys.executable ensures we use the same Python environment
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            capture_output=True, # Use capture_output to hide stdout/stderr unless there's an error
+            text=True
+        )
+    except subprocess.CalledProcessError as e:
+        st.error(f"Failed to install Playwright browsers: {e.stderr}")
+        # Stop the app if the installation fails, as it cannot proceed.
+        st.stop()
+
+# Run the installer at the start of the script
+install_playwright_deps()
+# ——————————————————————————————————————————————————————
+
+#
+# ——— Your existing functions (no changes needed here) ———
+#
 
 def slugify(text):
     return re.sub(r'[^a-z0-9]+', '-', text.strip().lower()).strip('-') or 'untitled'
@@ -65,7 +97,8 @@ async def save_page_with_assets(page, session, output_dir, file_slug, site_map, 
 
     for link_tag in soup.find_all('link', rel='stylesheet'):
         css_url = link_tag.get('href')
-        if not css_url: continue
+        if not css_url:
+            continue
         abs_css_url = urljoin(base_url, css_url)
         css_filename = os.path.basename(abs_css_url.split('?')[0]) or "style.css"
         local_css_path = assets_out_dir / css_filename
@@ -112,19 +145,20 @@ async def discover_site_structure(page):
     await page.goto(page.url, wait_until="networkidle")
     return site_map
 
-async def main(url):
+async def main_scraper(url: str, out_dir_base: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle")
 
-        out_dir_base = 'tab_snapshots'
         if Path(out_dir_base).exists():
             print(f"--- Removing existing output directory: {out_dir_base} ---")
             shutil.rmtree(out_dir_base)
         Path(out_dir_base).mkdir(exist_ok=True)
 
-        main_tabs_handles = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+        main_tabs_handles = await page.query_selector_all(
+            'div[role="tablist"]:first-of-type >> [role="tab"]'
+        )
 
         async with aiohttp.ClientSession() as session:
             if not main_tabs_handles:
@@ -133,9 +167,10 @@ async def main(url):
             else:
                 site_map = await discover_site_structure(page)
                 print("\n--- Starting Download and Rewrite Phase ---")
-
                 for i in range(len(main_tabs_handles)):
-                    main_tabs = await page.query_selector_all('div[role="tablist"]:first-of-type >> [role="tab"]')
+                    main_tabs = await page.query_selector_all(
+                        'div[role="tablist"]:first-of-type >> [role="tab"]'
+                    )
                     name = await main_tabs[i].inner_text()
                     print(f"\nProcessing main tab: {name}")
 
@@ -149,17 +184,32 @@ async def main(url):
 
                         all_tablists = await page.query_selector_all('[role="tablist"]')
                         if len(all_tablists) <= 1:
-                            await save_page_with_assets(page, session, str(tab_out_dir), "index", site_map, out_dir_base)
+                            await save_page_with_assets(
+                                page, session, str(tab_out_dir), "index", site_map, out_dir_base
+                            )
                         else:
                             print(f"  Found sub-tabs for '{name}'")
-                            sub_tab_buttons = await all_tablists[1].query_selector_all('[role="tab"]')
-                            for j in range(len(sub_tab_buttons)):
-                                sub_tabs = await (await page.query_selector_all('[role="tablist"]'))[1].query_selector_all('[role="tab"]')
+                            # Get the initial count of sub-tabs to loop through
+                            sub_tabs_list = await page.query_selector_all('div[role="tablist"] >> nth=1 >> [role="tab"]')
+                            
+                            for j in range(len(sub_tabs_list)):
+                                # In each iteration, re-fetch the tab elements to avoid stale element errors
+                                all_tablists_again = await page.query_selector_all('[role="tablist"]')
+                                sub_tabs_container = all_tablists_again[1]
+                                sub_tabs = await sub_tabs_container.query_selector_all('[role="tab"]') # <-- FIXED
+
                                 sub_name = await sub_tabs[j].inner_text()
                                 try:
                                     await sub_tabs[j].click()
                                     await page.wait_for_timeout(1500)
-                                    await save_page_with_assets(page, session, str(tab_out_dir), slugify(sub_name), site_map, out_dir_base)
+                                    await save_page_with_assets(
+                                        page,
+                                        session,
+                                        str(tab_out_dir),
+                                        slugify(sub_name),
+                                        site_map,
+                                        out_dir_base,
+                                    )
                                 except Exception as sub_e:
                                     print(f"    -> Error on sub-tab '{sub_name}': {sub_e}")
 
@@ -169,6 +219,56 @@ async def main(url):
         await browser.close()
         print("\n✅ All tabs and assets downloaded and linked.")
 
-if __name__ == "__main__":
-    dashboard_url = 'https://flipsidecrypto.xyz/Sandesh/my-pet-hooligan---the-fps-frontier--Q7dYU'
-    asyncio.run(main(dashboard_url))
+
+#
+# ——— Streamlit UI ———
+#
+
+st.title("💾 Tab-Structured Site Snapshotter")
+st.markdown(
+    """
+    Enter the URL of a dashboard or any tab-structured site below, click **Start Download**,  
+    and this tool will grab all tabs (and sub-tabs), download their HTML + CSS assets,  
+    rewrite links to work offline, and package them for you.
+    """
+)
+
+url = st.text_input("🔗 Dashboard URL", placeholder="https://example.com/your-dashboard")
+out_dir = st.text_input("📁 Output directory", value="tab_snapshots")
+
+if st.button("🚀 Start Download"):
+    if not url.strip():
+        st.error("Please enter a valid URL.")
+    else:
+        logs = []
+        original_print = builtins.print
+
+        def _capture_print(*args, **kwargs):
+            original_print(*args, **kwargs)
+            logs.append(" ".join(str(a) for a in args))
+
+        builtins.print = _capture_print  # monkey-patch
+        try:
+            with st.spinner("Downloading… this may take a few minutes…"):
+                asyncio.run(main_scraper(url, out_dir))
+            st.success("✅ Download complete!")
+        except Exception as e:
+            logs.append(f"❌ Error: {e}")
+            st.error(f"Download failed: {e}")
+        finally:
+            builtins.print = original_print
+
+        # Show logs
+        st.subheader("📝 Logs")
+        st.text_area("", "\n".join(logs), height=300)
+
+        # Offer ZIP download
+        if Path(out_dir).exists():
+            zip_path = shutil.make_archive(out_dir, 'zip', out_dir)
+            with open(zip_path, "rb") as fp:
+                st.download_button(
+                    label="📥 Download ZIP of snapshots",
+                    data=fp,
+                    file_name=f"{out_dir}.zip",
+                    mime="application/zip"
+                )
