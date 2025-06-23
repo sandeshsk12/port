@@ -1,12 +1,29 @@
 [build]
-  command = "pip install -r requirements.txt && playwright install"
+  command = "npm install && npm run build"
   publish = "public"
+  functions = "netlify/functions"
 
 [build.environment]
+  NODE_VERSION = "18"
   PYTHON_VERSION = "3.11"
-  PLAYWRIGHT_BROWSERS_PATH = "0"  # This will install browsers in the default location
+  PLAYWRIGHT_BROWSERS_PATH = "0"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "0"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["playwright"]
 
 [[redirects]]
   from = "/*"
-  to = "/index.html"
+  to = "/.netlify/functions/server"
   status = 200
+  force = true
+
+[[plugins]]
+  package = "@netlify/plugin-functions-install-core"
+
+[dev]
+  command = "streamlit run streamlit_app.py"
+  port = 8501
+  targetPort = 8501
+  framework = "#custom"

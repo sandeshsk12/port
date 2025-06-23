@@ -44,6 +44,16 @@ Thumbs.db
 # Playwright
 .playwright/
 
+# Node.js
+node_modules/
+.npm
+.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
 # Downloaded content
 out/
 
@@ -66,3 +76,13 @@ logs/
 
 # Project specific
 *.zip
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Netlify
+.netlify/
+
+# Build directory
+build/
