@@ -4,4 +4,5 @@ aiohttp==3.9.3
 aiofiles==23.2.1
 requests==2.31.0
 python-dotenv==1.0.0
-playwright==1.42.0
+playwright>=1.42.0,<2.0.0
+greenlet>=3.0.0
