@@ -83,12 +83,66 @@ def rewrite_links(soup, current_html_path, site_map, base_output_dir):
                 el.replace_with(anchor)
     return soup
 
+async def wait_for_dynamic_content(page, timeout=30000):
+    """Wait for dynamic content to load, including charts and numbers"""
+    try:
+        # Wait for charts to be rendered
+        await page.wait_for_selector('.plotly', state='attached', timeout=timeout)
+        
+        # Wait for numbers to be populated (adjust the selector based on your actual number elements)
+        await page.wait_for_function("""() => {
+            const numberElements = document.querySelectorAll('[class*="value"], [class*="number"], [class*="metric"]');
+            return Array.from(numberElements).every(el => {
+                const text = el.textContent || '';
+                return text.trim() !== '' && !text.includes('...');
+            });
+        }""", timeout=timeout)
+        
+        # Give a small buffer time for any final animations
+        await page.wait_for_timeout(1000)
+        return True
+    except Exception as e:
+        print(f"Warning while waiting for dynamic content: {str(e)}")
+        return False
+
 async def save_page_with_assets(page, session, output_dir, file_slug, site_map, base_output_dir):
     print(f"    -> Processing page: {Path(output_dir).relative_to(base_output_dir)}/{file_slug}")
-    print("      Waiting 5 seconds for page to load...")
-    await page.wait_for_timeout(5000)
+    
+    # Wait for dynamic content to load
+    print("      Waiting for dynamic content to load...")
+    await wait_for_dynamic_content(page)
+    
+    # Take a screenshot for debugging
+    screenshot_path = Path(output_dir) / f"{file_slug}_screenshot.png"
+    await page.screenshot(path=str(screenshot_path), full_page=True)
+    print(f"      Screenshot saved to {screenshot_path}")
+    
+    # Get the HTML after dynamic content has loaded
     html = await page.content()
     base_url = page.url
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Inject JavaScript to ensure all numbers are visible
+    await page.add_script_tag(content="""
+    // Force all number elements to be visible
+    document.querySelectorAll('[class*="value"], [class*="number"], [class*="metric"]').forEach(el => {
+        el.style.visibility = 'visible';
+        el.style.opacity = '1';
+    });
+    
+    // Force all charts to render completely
+    if (typeof Plotly !== 'undefined') {
+        document.querySelectorAll('.plotly-graph-div').forEach(plot => {
+            Plotly.relayout(plot, {});
+        });
+    }
+    """)
+    
+    # Wait a bit more after injecting JS
+    await page.wait_for_timeout(1000)
+    
+    # Get the final HTML after all modifications
+    html = await page.content()
     soup = BeautifulSoup(html, 'html.parser')
 
     assets_dir_name = f"{file_slug}_files"
