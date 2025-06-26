@@ -145,17 +145,76 @@ async def discover_site_structure(page):
     await page.goto(page.url, wait_until="networkidle")
     return site_map
 
+async def navigate_with_retry(page, url, max_retries=3, initial_timeout=30000):
+    """Helper function to navigate with retry logic and exponential backoff"""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            # Increase timeout with each retry
+            timeout = min(initial_timeout * (2 ** attempt), 120000)  # Cap at 2 minutes
+            print(f"Attempt {attempt + 1}/{max_retries} - Loading {url} (timeout: {timeout}ms)")
+            await page.goto(url, 
+                         wait_until="domcontentloaded",  # More reliable than networkidle
+                         timeout=timeout)
+            # Wait for a short time after loading to ensure dynamic content is rendered
+            await page.wait_for_timeout(2000)
+            return True
+        except Exception as e:
+            last_error = e
+            print(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                wait_time = 5 * (attempt + 1)  # Exponential backoff
+                print(f"Retrying in {wait_time} seconds...")
+                await asyncio.sleep(wait_time)
+    print(f"Failed to load {url} after {max_retries} attempts")
+    raise last_error
+
 async def main_scraper(url: str, out_dir_base: str):
+    # Configure browser with additional arguments for better reliability
+    browser_args = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu'
+    ]
+    
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url, wait_until="networkidle")
+        browser = await p.chromium.launch(
+            headless=True,
+            args=browser_args,
+            timeout=120000  # 2 minutes timeout for browser operations
+        )
+        
+        # Create a new browser context with custom settings
+        context = await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            java_script_enabled=True,
+            ignore_https_errors=True
+        )
+        
+        page = await context.new_page()
+        
+        # Set default navigation timeout
+        page.set_default_navigation_timeout(60000)  # 60 seconds
+        page.set_default_timeout(30000)  # 30 seconds
+        
+        # Try to load the page with retries
+        success = await navigate_with_retry(page, url)
+        if not success:
+            raise Exception(f"Failed to load initial URL: {url}")
 
         if Path(out_dir_base).exists():
             print(f"--- Removing existing output directory: {out_dir_base} ---")
             shutil.rmtree(out_dir_base)
         Path(out_dir_base).mkdir(exist_ok=True)
 
+        # Wait for the main content to load
+        await page.wait_for_selector('div[role="tablist"]', timeout=30000)
+        
         main_tabs_handles = await page.query_selector_all(
             'div[role="tablist"]:first-of-type >> [role="tab"]'
         )
@@ -167,22 +226,34 @@ async def main_scraper(url: str, out_dir_base: str):
             else:
                 site_map = await discover_site_structure(page)
                 print("\n--- Starting Download and Rewrite Phase ---")
+                
                 for i in range(len(main_tabs_handles)):
+                    # Refresh the tab list to avoid stale elements
                     main_tabs = await page.query_selector_all(
                         'div[role="tablist"]:first-of-type >> [role="tab"]'
                     )
-                    name = await main_tabs[i].inner_text()
-                    print(f"\nProcessing main tab: {name}")
-
+                    if i >= len(main_tabs):
+                        print(f"Warning: Tab index {i} is out of bounds. Skipping...")
+                        continue
+                            
                     try:
+                        name = await main_tabs[i].inner_text()
+                        print(f"\nProcessing main tab: {name} ({i+1}/{len(main_tabs_handles)})")
+                        
+                        # Scroll the tab into view and click with retry
+                        await main_tabs[i].scroll_into_view_if_needed()
                         await main_tabs[i].click()
-                        await page.wait_for_timeout(2000)
+                        
+                        # Wait for content to load after clicking
+                        await page.wait_for_load_state('networkidle', timeout=30000)
+                        await asyncio.sleep(2)  # Additional wait for dynamic content
 
                         slug = slugify(name)
                         tab_out_dir = Path(out_dir_base) / slug
                         tab_out_dir.mkdir(parents=True, exist_ok=True)
 
                         all_tablists = await page.query_selector_all('[role="tablist"]')
+                        
                         if len(all_tablists) <= 1:
                             await save_page_with_assets(
                                 page, session, str(tab_out_dir), "index", site_map, out_dir_base
