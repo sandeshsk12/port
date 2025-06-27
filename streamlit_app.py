@@ -126,11 +126,30 @@ async def save_page_with_assets(page, session, output_dir, file_slug, site_map, 
         if await download_resource(session, abs_css_url, str(local_css_path)):
             link_tag['href'] = f"{assets_dir_name}/{css_filename}"
 
+    target_div = soup.select_one('body > div > div:nth-of-type(3) > main > div > div > div:nth-of-type(1) > div:nth-of-type(2)')
+
+    if target_div:
+        new_soup = BeautifulSoup('<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body></body></html>', 'html.parser')
+        for link_tag in soup.find_all('link', rel='stylesheet'):
+            new_soup.head.append(link_tag)
+        
+        style_tag = new_soup.new_tag('style')
+        style_tag.string = """
+            body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: auto; }
+            body > div { width: 100% !important; max-width: 100% !important; }
+        """
+        new_soup.head.append(style_tag)
+        new_soup.body.append(target_div)
+        final_soup = new_soup
+    else:
+        print(f"      Warning: Target element not found in {file_slug}. Saving an empty page.")
+        final_soup = BeautifulSoup('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Element not found</title></head><body><h1>Content not found</h1><p>The requested element could not be found on the page.</p></body></html>', 'html.parser')
+
     fpath = Path(output_dir) / f"{file_slug}.html"
-    soup = rewrite_links(soup, str(fpath), site_map, base_output_dir)
+    final_soup = rewrite_links(final_soup, str(fpath), site_map, base_output_dir)
 
     with open(fpath, 'w', encoding='utf-8') as f:
-        f.write(str(soup))
+        f.write(str(final_soup))
     print(f"      Saved and linked HTML to {fpath}")
 
 async def discover_site_structure(page):
