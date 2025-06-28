@@ -59,10 +59,6 @@ def install_playwright_deps():
 install_playwright_deps()
 # ——————————————————————————————————————————————————————
 
-#
-# ——— Your existing functions (no changes needed here) ———
-#
-
 def slugify(text):
     return re.sub(r'[^a-z0-9]+', '-', text.strip().lower()).strip('-') or 'untitled'
 
@@ -186,6 +182,7 @@ async def discover_site_structure(page):
     return site_map
 
 async def main_scraper(url: str, out_dir_base: str):
+    site_map = {} # Define site_map at a higher scope
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -229,14 +226,12 @@ async def main_scraper(url: str, out_dir_base: str):
                             )
                         else:
                             print(f"  Found sub-tabs for '{name}'")
-                            # Get the initial count of sub-tabs to loop through
                             sub_tabs_list = await page.query_selector_all('div[role="tablist"] >> nth=1 >> [role="tab"]')
                             
                             for j in range(len(sub_tabs_list)):
-                                # In each iteration, re-fetch the tab elements to avoid stale element errors
                                 all_tablists_again = await page.query_selector_all('[role="tablist"]')
                                 sub_tabs_container = all_tablists_again[1]
-                                sub_tabs = await sub_tabs_container.query_selector_all('[role="tab"]') # <-- FIXED
+                                sub_tabs = await sub_tabs_container.query_selector_all('[role="tab"]')
 
                                 sub_name = await sub_tabs[j].inner_text()
                                 try:
@@ -255,6 +250,36 @@ async def main_scraper(url: str, out_dir_base: str):
 
                     except Exception as e:
                         print(f"  -> Error on main tab '{name}': {e}")
+        
+        # --- MODIFIED CODE BLOCK TO CREATE ROOT FILE ---
+        if site_map:
+            first_page_path = next(iter(site_map.values()))
+            
+            # Get the name of the base output directory for the filename
+            folder_name = Path(out_dir_base).name
+            root_file_name = f"{folder_name}.html"
+            root_file_path = Path(out_dir_base) / root_file_name
+            
+            print(f"\n--- Creating root entry file '{root_file_name}' to redirect to '{first_page_path}' ---")
+            
+            redirect_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Redirecting...</title>
+    <meta charset="utf-8" />
+    <meta http-equiv="refresh" content="0; url={first_page_path}" />
+</head>
+<body>
+    <p>If you are not redirected automatically, follow this <a href="{first_page_path}">link to the dashboard</a>.</p>
+</body>
+</html>
+"""
+            with open(root_file_path, 'w', encoding='utf-8') as f:
+                f.write(redirect_html.strip())
+            
+            print(f"✅ Root file created successfully.")
+        # --- END OF MODIFIED CODE BLOCK ---
 
         await browser.close()
         print("\n✅ All tabs and assets downloaded and linked.")
@@ -274,41 +299,67 @@ st.markdown(
 )
 
 url = st.text_input("🔗 Dashboard URL", placeholder="https://example.com/your-dashboard")
-out_dir = st.text_input("📁 Output directory", value="tab_snapshots")
+out_dir = st.text_input("📁 Dashboard Name", value="Enter Dashboard Name")
 
 if st.button("🚀 Start Download"):
     if not url.strip():
         st.error("Please enter a valid URL.")
     else:
+        # Create a container for logs
+        log_container = st.empty()
         logs = []
         original_print = builtins.print
 
         def _capture_print(*args, **kwargs):
+            # Call the original print function
             original_print(*args, **kwargs)
-            logs.append(" ".join(str(a) for a in args))
+            
+            # Add to logs
+            log_message = " ".join(str(a) for a in args)
+            logs.append(log_message)
+            
+            # Update the log display in real-time
+            with log_container.container():
+                st.subheader("📝 Logs (Live)")
+                st.code("\n".join(logs), language="text")
 
-        builtins.print = _capture_print  # monkey-patchss
+        builtins.print = _capture_print
+        
+        # Show initial log container
+        with log_container.container():
+            st.subheader("📝 Logs (Live)")
+            st.code("Starting download process...", language="text")
+
         try:
             with st.spinner("Downloading… this may take a few minutes…"):
                 asyncio.run(main_scraper(url, out_dir))
             st.success("✅ Download complete!")
         except Exception as e:
-            logs.append(f"❌ Error: {e}")
-            st.error(f"Download failed: {e}")
+            error_msg = f"❌ Error: {e}"
+            logs.append(error_msg)
+            st.error(error_msg)
         finally:
             builtins.print = original_print
+            
+        # Final log display
+        with log_container.container():
+            st.subheader("📝 Logs")
+            st.code("\n".join(logs), language="text")
 
-        # Show logs
-        st.subheader("📝 Logs")
-        st.text_area("", "\n".join(logs), height=300)
-
-        # Offer ZIP download
         if Path(out_dir).exists():
+            # Create a ZIP file with a clean name based on the dashboard name
+            clean_name = out_dir.lower().replace(' ', '_')
+            zip_filename = f"{clean_name}_dashboard.zip"
             zip_path = shutil.make_archive(out_dir, 'zip', out_dir)
-            with open(zip_path, "rb") as fp:
+            
+            # Rename the zip file to our clean name
+            new_zip_path = Path(zip_path).parent / zip_filename
+            Path(zip_path).rename(new_zip_path)
+            
+            with open(new_zip_path, "rb") as fp:
                 st.download_button(
                     label="📥 Download ZIP of snapshots",
                     data=fp,
-                    file_name=f"{out_dir}.zip",
+                    file_name=zip_filename,
                     mime="application/zip"
                 )
