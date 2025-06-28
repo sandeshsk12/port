@@ -56,13 +56,6 @@ A powerful tool to download and save tab-structured websites as offline HTML sna
    - The tool will create a new directory with your specified name
    - Open `index.html` in your browser to view the offline snapshot
 
-## Command Line Usage
-
-You can also use the tool directly from the command line:
-
-```bash
-python -m scraper --url "https://example.com/dashboard" --output "my_dashboard"
-```
 
 ## Output Structure
 
