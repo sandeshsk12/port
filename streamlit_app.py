@@ -289,10 +289,10 @@ async def main_scraper(url: str, out_dir_base: str):
 # ——— Streamlit UI ———
 #
 
-st.title("💾 Tab-Structured Site Snapshotter")
+st.title("💾 Save your Flipside dashboard")
 st.markdown(
     """
-    Enter the URL of a dashboard or any tab-structured site below, click **Start Download**,  
+    Enter the URL of your dashboard, click **Start Download**,  
     and this tool will grab all tabs (and sub-tabs), download their HTML + CSS assets,  
     rewrite links to work offline, and package them for you.
     """
